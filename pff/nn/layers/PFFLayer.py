@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from pff.utils.functions import ReLU_full_grad
+from pff.utils.functions import my_relu
 
 
 class PFFLayer(nn.Module):
@@ -9,7 +9,6 @@ class PFFLayer(nn.Module):
         self.beta = beta
         self.r_sigma = 0.01
         self.g_sigma = 0.025
-        self.relu = ReLU_full_grad()
         self.threshold = threshold
 
         self.W = nn.Linear(size_below, size, bias=bias_r)
@@ -37,13 +36,13 @@ class PFFLayer(nn.Module):
         if top:
             return torch.softmax(self.W(torch.normalize(z_below, dim=1)), dim=1)
 
-        L =  self.relu(self.L.weight) * self.M * (1 - torch.eye(self.size)) - self.relu(self.L.weight) * (torch.eye(self.size))
+        L =  my_relu(self.L.weight) * self.M * (1 - torch.eye(self.size)) - my_relu(self.L.weight) * (torch.eye(self.size))
 
         bottom_up = self.W(torch.normalize(z_below, dim=1))
         top_down = self.V(torch.normalize(z_above, dim=1)) 
         lateral = L @ torch.normalize(z, dim=1) 
         inj_noise = torch.normal(0, self.r_sigma, size=z.shape)
-        proposed_z = self.relu(bottom_up + top_down - lateral + inj_noise)
+        proposed_z = my_relu(bottom_up + top_down - lateral + inj_noise)
 
         return self.beta * proposed_z + (1 - self.beta) * z
     
@@ -53,13 +52,13 @@ class PFFLayer(nn.Module):
         else:
             with torch.no_grad():
                 inj_noise = torch.normal(0, self.g_sigma, size=z_above.shape)
-                z_above = torch.normalize(self.relu(z_above + inj_noise), dim=1)
-        return self.relu(self.G(z_above))
+                z_above = torch.normalize(my_relu(z_above + inj_noise), dim=1)
+        return my_relu(self.G(z_above))
 
 
     
     def forward(self, x, is_top=False):
         if not is_top:
-            return self.relu(self.W(torch.normalize(x, dim=1)))
+            return my_relu(self.W(torch.normalize(x, dim=1)))
         else:
             return torch.softmax(self.W(torch.normalize(x, dim=1)), dim=1)
