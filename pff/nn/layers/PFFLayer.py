@@ -1,21 +1,25 @@
 import torch
 import torch.nn as nn
+from pff.utils.functions import ReLU_full_grad
+
 
 class PFFLayer(nn.Module):
-    def __init__(self, size_below, size, size_above=None, beta=0.1, bias=False):
+    def __init__(self, size_below, size, size_above, beta=0.3, threshold=3.0, bias_r=True, bias_g=False):
         self.size = size
+        self.beta = beta
+        self.r_sigma = 0.01
+        self.g_sigma = 0.025
+        self.relu = ReLU_full_grad()
+        self.threshold = threshold
 
-        if size_above is None:
-            size_above = size
-        self.W = nn.Linear(size_below, size, bias=bias)
-        self.V = nn.Linear(size_above, size, bias=bias)
-        self.L = nn.Linear(size, size, bias=bias)
-        self.M = nn.Empty(size, size, bias=bias)
+        self.W = nn.Linear(size_below, size, bias=bias_r)
+        self.V = nn.Linear(size_above, size, bias=False)
+        self.L = nn.Linear(size, size, bias=False)
+        self.L.weight.data = self.L.weight.data.abs()
+        self.M = nn.Empty(size, size, requires_grad=False)
         self._init_M()
 
-        self.r_sigma = 0.025
-        self.g_sigma = 0.025
-
+        self.G = nn.Linear(size_above, size, bias=bias_g)
 
     def _init_M(self, K=10):
         if self.size % K != 0:
@@ -28,18 +32,34 @@ class PFFLayer(nn.Module):
                     s[row, col] = 1.0
         self.M = torch.cat(S, dim=1)
         assert(self.M.shape == (self.size, self.size))
-
     
-    def forward(self, z_below, z, z_above=None):
-        if z_above is None:
-            z_above = z
-        L = torch.relu(self.L.weight) * (torch.eye(self.size)) - torch.relu(self.L.weight) * self.M * (1 - torch.eye(self.size)) 
+    def step_rep(self, z_below, z, z_above, top=False):
+        if top:
+            return torch.softmax(self.W(torch.normalize(z_below, dim=1)), dim=1)
 
-        bottom_up = torch.relu(self.W(torch.normalize(z_below, dim=1))) 
+        L =  self.relu(self.L.weight) * self.M * (1 - torch.eye(self.size)) - self.relu(self.L.weight) * (torch.eye(self.size))
+
+        bottom_up = self.W(torch.normalize(z_below, dim=1))
         top_down = self.V(torch.normalize(z_above, dim=1)) 
         lateral = L @ torch.normalize(z, dim=1) 
         inj_noise = torch.normal(0, self.r_sigma, size=z.shape)
-        proposed_z = bottom_up + top_down + lateral + inj_noise
+        proposed_z = self.relu(bottom_up + top_down - lateral + inj_noise)
 
         return self.beta * proposed_z + (1 - self.beta) * z
-        
+    
+    def step_gen(self, z_above, is_top=False):
+        if is_top:
+            z_above = torch.normalize(z_above, dim=1)
+        else:
+            with torch.no_grad():
+                inj_noise = torch.normal(0, self.g_sigma, size=z_above.shape)
+                z_above = torch.normalize(self.relu(z_above + inj_noise), dim=1)
+        return self.relu(self.G(z_above))
+
+
+    
+    def forward(self, x, is_top=False):
+        if not is_top:
+            return self.relu(self.W(torch.normalize(x, dim=1)))
+        else:
+            return torch.softmax(self.W(torch.normalize(x, dim=1)), dim=1)
